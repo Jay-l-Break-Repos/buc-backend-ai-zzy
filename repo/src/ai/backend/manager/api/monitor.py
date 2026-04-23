@@ -184,10 +184,10 @@ async def _background_poll_loop(
 # Private context (background task handle + pending-poll set)
 # ---------------------------------------------------------------------------
 
-@attrs.define(slots=True, auto_attribs=True, init=False)
+@attrs.define(slots=True, auto_attribs=True)
 class PrivateContext:
-    poll_task: asyncio.Task
-    pending_ids: Set[uuid.UUID]
+    poll_task: Optional[asyncio.Task] = None
+    pending_ids: Set[uuid.UUID] = attrs.Factory(set)
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +302,7 @@ async def delete_service(request: web.Request) -> web.Response:
 async def init(app: web.Application) -> None:
     root_ctx: RootContext = app["_root.context"]
     app_ctx: PrivateContext = app["monitor.context"]
-    app_ctx.pending_ids = set()
+    # pending_ids is already initialized to an empty set by PrivateContext()
     app_ctx.poll_task = asyncio.create_task(
         _background_poll_loop(root_ctx, app_ctx.pending_ids)
     )
