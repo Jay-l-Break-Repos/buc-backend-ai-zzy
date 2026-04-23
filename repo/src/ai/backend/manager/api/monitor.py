@@ -25,9 +25,9 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Iterable, Optional, Set, Tuple
 
-import aiohttp
 import aiohttp_cors
 import attrs
+import requests
 import sqlalchemy as sa
 import trafaret as t
 from aiohttp import web
@@ -54,29 +54,38 @@ POLL_TIMEOUT_SECONDS = 10
 # Polling helpers
 # ---------------------------------------------------------------------------
 
+def _do_requests_get(url: str) -> Tuple[int, float, str]:
+    """
+    Synchronous helper that calls requests.get() and returns
+    (status_code, latency_ms, status).  Runs inside a thread executor.
+    """
+    t0 = time.monotonic()
+    resp = requests.get(url, timeout=POLL_TIMEOUT_SECONDS, allow_redirects=True)
+    elapsed = time.monotonic() - t0
+    latency_ms = round(elapsed * 1000, 2)
+    status = "up" if resp.status_code < 400 else "down"
+    return resp.status_code, latency_ms, status
+
+
 async def _poll_one_service(
     root_ctx: RootContext,
     service_id: uuid.UUID,
     url: str,
 ) -> None:
     """
-    Perform a single HTTP GET against *url*, then write the result back to the
-    database row identified by *service_id*.
+    Perform a single HTTP GET against *url* using requests.get() (run in a
+    thread executor so the async event loop is not blocked), then write the
+    result back to the database row identified by *service_id*.
     """
     status_code: Optional[int] = None
     latency_ms: Optional[float] = None
     status: str = "down"
 
     try:
-        timeout = aiohttp.ClientTimeout(total=POLL_TIMEOUT_SECONDS)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            t0 = time.monotonic()
-            async with session.get(url, allow_redirects=True) as resp:
-                elapsed = time.monotonic() - t0
-                status_code = resp.status
-                latency_ms = round(elapsed * 1000, 2)
-                # Treat any 2xx/3xx as "up"; 4xx/5xx as "down"
-                status = "up" if resp.status < 400 else "down"
+        loop = asyncio.get_event_loop()
+        status_code, latency_ms, status = await loop.run_in_executor(
+            None, lambda: _do_requests_get(url)
+        )
     except Exception as exc:
         log.debug("MONITOR.POLL_ONE_SERVICE: url={} error={}", url, exc)
         status = "down"
