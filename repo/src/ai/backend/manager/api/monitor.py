@@ -5,6 +5,10 @@ Endpoints:
   GET  /api/monitor/services         - list all monitored services with their status
   POST /api/monitor/services         - add a new URL to monitor
   DELETE /api/monitor/services/{id}  - remove a monitored endpoint
+
+Response format (matching test expectations):
+  POST returns: { id, name, url, last_check, status_code, latency_ms, status, created_at }
+  GET  returns: [ { id, name, url, last_check, status_code, latency_ms, status, created_at }, ... ]
 """
 from __future__ import annotations
 
@@ -34,7 +38,7 @@ async def list_services(request: web.Request) -> web.Response:
     """
     GET /api/monitor/services
 
-    Returns a list of all monitored services with their current status.
+    Returns a flat array of all monitored services with their current status.
     """
     root_ctx: RootContext = request.app["_root.context"]
     log.info("MONITOR.LIST_SERVICES()")
@@ -45,11 +49,12 @@ async def list_services(request: web.Request) -> web.Response:
         rows = result.fetchall()
 
     services = [MonitoredServiceRow.from_row(row).to_dict() for row in rows]
-    return web.json_response({"services": services})
+    return web.json_response(services)
 
 
 @check_api_params(
     t.Dict({
+        t.Key("name"): t.String,
         t.Key("url"): t.URL,
     })
 )
@@ -58,20 +63,22 @@ async def add_service(request: web.Request, params: Any) -> web.Response:
     POST /api/monitor/services
 
     Adds a new URL to monitor. The service is saved but not polled yet.
-    Returns the created service record.
+    Returns the created service record (flat, not nested).
     """
     root_ctx: RootContext = request.app["_root.context"]
+    name = str(params["name"])
     url = str(params["url"])
-    log.info("MONITOR.ADD_SERVICE(url:{})", url)
+    log.info("MONITOR.ADD_SERVICE(name:{}, url:{})", name, url)
 
     new_id = uuid.uuid4()
     async with root_ctx.db.begin() as conn:
         insert_query = monitored_services.insert().values(
             id=new_id,
+            name=name,
             url=url,
-            last_check_time=None,
-            last_status_code=None,
-            last_latency_ms=None,
+            last_check=None,
+            status_code=None,
+            latency_ms=None,
             status=None,
         )
         await conn.execute(insert_query)
@@ -88,7 +95,8 @@ async def add_service(request: web.Request, params: Any) -> web.Response:
         )
 
     service = MonitoredServiceRow.from_row(row).to_dict()
-    return web.json_response({"service": service}, status=HTTPStatus.CREATED)
+    # Return the service object directly (flat), not nested in {"service": ...}
+    return web.json_response(service, status=HTTPStatus.CREATED)
 
 
 async def delete_service(request: web.Request) -> web.Response:

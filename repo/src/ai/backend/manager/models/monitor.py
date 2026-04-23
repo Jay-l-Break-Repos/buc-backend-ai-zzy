@@ -3,6 +3,7 @@ Data model for the health check monitor.
 
 Each monitored service stores:
 - URL
+- Name (human-readable label)
 - Last check time
 - HTTP response status code
 - Latency in milliseconds
@@ -30,10 +31,11 @@ monitored_services = sa.Table(
         default=uuid.uuid4,
         server_default=sa.text("uuid_generate_v4()"),
     ),
+    sa.Column("name", sa.String(256), nullable=False),
     sa.Column("url", sa.String(2048), nullable=False),
-    sa.Column("last_check_time", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("last_status_code", sa.Integer, nullable=True),
-    sa.Column("last_latency_ms", sa.Float, nullable=True),
+    sa.Column("last_check", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("status_code", sa.Integer, nullable=True),
+    sa.Column("latency_ms", sa.Float, nullable=True),
     sa.Column("status", sa.String(16), nullable=True),  # "up" | "down" | None (never checked)
     sa.Column(
         "created_at",
@@ -52,30 +54,33 @@ class MonitoredServiceRow:
     def __init__(
         self,
         id: uuid.UUID,
+        name: str,
         url: str,
-        last_check_time: Optional[datetime],
-        last_status_code: Optional[int],
-        last_latency_ms: Optional[float],
+        last_check: Optional[datetime],
+        status_code: Optional[int],
+        latency_ms: Optional[float],
         status: Optional[str],
         created_at: datetime,
     ) -> None:
         self.id = id
+        self.name = name
         self.url = url
-        self.last_check_time = last_check_time
-        self.last_status_code = last_status_code
-        self.last_latency_ms = last_latency_ms
+        self.last_check = last_check
+        self.status_code = status_code
+        self.latency_ms = latency_ms
         self.status = status
         self.created_at = created_at
 
     def to_dict(self) -> dict:
         return {
             "id": str(self.id),
+            "name": self.name,
             "url": self.url,
-            "last_check_time": (
-                self.last_check_time.isoformat() if self.last_check_time else None
+            "last_check": (
+                self.last_check.isoformat() if self.last_check else None
             ),
-            "last_status_code": self.last_status_code,
-            "last_latency_ms": self.last_latency_ms,
+            "status_code": self.status_code,
+            "latency_ms": self.latency_ms,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
@@ -84,10 +89,11 @@ class MonitoredServiceRow:
     def from_row(cls, row) -> "MonitoredServiceRow":
         return cls(
             id=row["id"],
+            name=row["name"],
             url=row["url"],
-            last_check_time=row["last_check_time"],
-            last_status_code=row["last_status_code"],
-            last_latency_ms=row["last_latency_ms"],
+            last_check=row["last_check"],
+            status_code=row["status_code"],
+            latency_ms=row["latency_ms"],
             status=row["status"],
             created_at=row["created_at"],
         )
