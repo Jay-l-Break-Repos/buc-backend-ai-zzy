@@ -1,7 +1,7 @@
 """add monitored_services table for health check monitor
 
 Revision ID: a1b2c3d4e5f7
-Revises: (latest)
+Revises: fa3dd7f77c19
 Create Date: 2025-01-01 00:00:00.000000
 
 """
@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 # revision identifiers, used by Alembic.
 revision = "a1b2c3d4e5f7"
-down_revision = None  # Will be set to the actual latest revision
+down_revision = "fa3dd7f77c19"
 branch_labels = None
 depends_on = None
 
