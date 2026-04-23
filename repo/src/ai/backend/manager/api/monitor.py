@@ -23,20 +23,18 @@ import time
 import uuid
 from datetime import datetime, timezone
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Iterable, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Iterable, Optional, Set, Tuple
 
 import aiohttp_cors
 import attrs
 import requests
 import sqlalchemy as sa
-import trafaret as t
 from aiohttp import web
 
 from ai.backend.logging import BraceStyleAdapter
 
 from ..models.monitor import MonitoredServiceRow, monitored_services
 from .types import CORSOptions, WebMiddleware
-from .utils import check_api_params
 
 if TYPE_CHECKING:
     from .context import RootContext
@@ -212,25 +210,65 @@ async def list_services(request: web.Request) -> web.Response:
     return web.json_response(services)
 
 
-@check_api_params(
-    t.Dict({
-        t.Key("name"): t.String,
-        t.Key("url"): t.URL,
-    })
-)
-async def add_service(request: web.Request, params: Any) -> web.Response:
+async def _parse_request_body(request: web.Request) -> dict:
+    """
+    Parse the request body accepting both:
+      - application/json  (used by direct API clients)
+      - application/x-www-form-urlencoded  (used by Playwright's data: option)
+      - multipart/form-data
+    """
+    ct = request.content_type or ""
+    if "json" in ct:
+        return await request.json()
+    elif "form" in ct or "multipart" in ct:
+        post = await request.post()
+        return dict(post)
+    else:
+        # Fall back: try JSON first, then form
+        body = await request.text()
+        if body:
+            try:
+                import json as _json
+                return _json.loads(body)
+            except Exception:
+                pass
+            # Try to parse as query-string form data
+            from urllib.parse import parse_qs
+            parsed = parse_qs(body, keep_blank_values=True)
+            return {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+        return {}
+
+
+async def add_service(request: web.Request) -> web.Response:
     """
     POST /api/monitor/services
 
     Adds a new URL to monitor. The service is saved and immediately queued
     for its first health check poll.
     Returns the created service record (flat, not nested).
+
+    Accepts both application/json and application/x-www-form-urlencoded bodies.
     """
     root_ctx: RootContext = request.app["_root.context"]
     app_ctx: PrivateContext = request.app["monitor.context"]
-    name = str(params["name"])
-    url = str(params["url"])
+
+    try:
+        body = await _parse_request_body(request)
+    except Exception as exc:
+        log.warning("MONITOR.ADD_SERVICE: failed to parse body: {}", exc)
+        return web.json_response({"error": "Malformed request body"}, status=HTTPStatus.BAD_REQUEST)
+
+    name = body.get("name", "").strip()
+    url = body.get("url", "").strip()
     log.info("MONITOR.ADD_SERVICE(name:{}, url:{})", name, url)
+
+    if not name:
+        return web.json_response({"error": "name is required"}, status=HTTPStatus.BAD_REQUEST)
+    if not url:
+        return web.json_response({"error": "url is required"}, status=HTTPStatus.BAD_REQUEST)
+    # Basic URL sanity check
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return web.json_response({"error": "url must start with http:// or https://"}, status=HTTPStatus.BAD_REQUEST)
 
     new_id = uuid.uuid4()
     async with root_ctx.db.begin() as conn:
