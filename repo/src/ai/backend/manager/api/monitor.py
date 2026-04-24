@@ -192,7 +192,7 @@ def create_app(
 ) -> Tuple[web.Application, Iterable[WebMiddleware]]:
     app = web.Application()
     app["api_versions"] = (1, 2, 3, 4, 5)
-    app["prefix"] = "monitor"
+    app["prefix"] = "api/monitor"
     app["monitor.services"] = {}
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
