@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # Database service
+  backendai-db:
+    image: postgres:16.3-alpine
+    restart: unless-stopped
+    command: postgres -c 'max_connections=256'
+    networks:
+      - backendai
+    ports:
+      - "8100:5432"
+    environment:
+      - POSTGRES_DB=backend
+      - POSTGRES_PASSWORD=develove
+    volumes:
+      - postgres-data:/var/lib/postgresql/data:rw
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Redis service
+  backendai-redis:
+    image: redis:7.2.4-alpine
+    restart: unless-stopped
+    networks:
+      - backendai
+    ports:
+      - "8110:6379"
+    volumes:
+      - redis-data:/data:rw
+    command: >
+      redis-server
+      --appendonly yes
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # etcd service
+  backendai-etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    restart: unless-stopped
+    volumes:
+      - etcd-data:/etcd-data:rw
+    networks:
+      - backendai
+    ports:
+      - "8120:2379"
+    command: >
+      /usr/local/bin/etcd
+      --name backendai-etcd
+      --data-dir /etcd-data
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://0.0.0.0:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://0.0.0.0:2380
+      --initial-cluster backendai-etcd=http://0.0.0.0:2380
+      --initial-cluster-token backendai-etcd-token
+      --initial-cluster-state new
+      --enable-v2=true
+      --auto-compaction-retention 1
+      --metrics=extensive
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # MinIO service for object storage
+  backendai-minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    networks:
+      - backendai
+    ports:
+      - "9000:9000"    # API port
+      - "9001:9001"    # Console port
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio-data:/data:rw
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # BackendAI Manager service
+  backendai-manager:
+    build: .
+    restart: unless-stopped
+    networks:
+      - backendai
+    ports:
+      - "9090:8081"  # Map to port 9090 for external access
+    depends_on:
+      backendai-db:
+        condition: service_healthy
+      backendai-redis:
+        condition: service_healthy
+      backendai-etcd:
+        condition: service_healthy
+      backendai-minio:
+        condition: service_healthy
+    volumes:
+      - ./manager-config.toml:/app/configs/manager/halfstack.toml:ro
+    environment:
+      - PYTHONPATH=/app/src
+
+networks:
+  backendai:
+
+volumes:
+  postgres-data:
+  redis-data:
+  etcd-data:
+  minio-data:
