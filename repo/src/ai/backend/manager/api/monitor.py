@@ -13,17 +13,30 @@ Response format:
                                 last_latency_ms, status, created_at } }
   DELETE returns: 204 No Content on success, 404 when not found.
 
-The store is in-memory for now; persistence will be added in a later step.
-Polling logic (the 60-second background timer) will also be added in the next step.
+Background polling
+------------------
+When the sub-app starts a background asyncio task (``_poll_loop``) is launched.
+Every ``POLL_INTERVAL_SECONDS`` (default 60) it iterates over every registered
+service and performs an HTTP GET using the ``requests`` library inside a thread
+executor so the event loop is never blocked.  The result is written back to the
+store via ``InMemoryServiceStore.update_health()``.
+
+An immediate first check is also triggered for each newly registered service so
+that the caller does not have to wait up to 60 seconds for the first status.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Iterable, Tuple
+from typing import TYPE_CHECKING, Iterable, Optional, Tuple
 
 import aiohttp_cors
+import requests
 import trafaret as t
 from aiohttp import web
 
@@ -38,6 +51,16 @@ if TYPE_CHECKING:
 log = BraceStyleAdapter(logging.getLogger(__spec__.name))
 
 # ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+#: How often (in seconds) the background poller checks all registered services.
+POLL_INTERVAL_SECONDS: int = 60
+
+#: Per-request timeout (connect + read) used by the ``requests`` library.
+REQUEST_TIMEOUT_SECONDS: float = 10.0
+
+# ---------------------------------------------------------------------------
 # Input validation schema
 # ---------------------------------------------------------------------------
 
@@ -47,6 +70,142 @@ _add_service_schema = t.Dict(
         t.Key("name", optional=True): t.String(min_length=1, max_length=256),
     }
 )
+
+# ---------------------------------------------------------------------------
+# Health-check helper
+# ---------------------------------------------------------------------------
+
+
+def _check_service_sync(url: str) -> Tuple[Optional[int], float]:
+    """
+    Perform a synchronous HTTP GET against *url* and return
+    ``(status_code, latency_ms)``.
+
+    This function is intentionally *synchronous* so that it can be safely
+    executed inside a :class:`~concurrent.futures.ThreadPoolExecutor` without
+    blocking the asyncio event loop.
+
+    If the request fails for any reason (timeout, connection error, etc.) the
+    returned ``status_code`` is ``None`` and the latency reflects the time
+    elapsed until the failure.
+    """
+    t0 = time.monotonic()
+    try:
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=True)
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        return resp.status_code, latency_ms
+    except Exception as exc:
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        log.debug("Health check failed for {}: {}", url, exc)
+        return None, latency_ms
+
+
+async def _check_service_async(
+    app: web.Application,
+    service: MonitoredService,
+) -> None:
+    """
+    Run :func:`_check_service_sync` in a thread executor and persist the
+    result back to the store.
+    """
+    store: InMemoryServiceStore = app["monitor.store"]
+    executor: ThreadPoolExecutor = app["monitor.executor"]
+    loop = asyncio.get_event_loop()
+
+    log.debug("Checking service {} ({})", service.name, service.url)
+    try:
+        status_code, latency_ms = await loop.run_in_executor(
+            executor, _check_service_sync, service.url
+        )
+    except Exception as exc:
+        log.warning("Unexpected error while checking service {}: {}", service.url, exc)
+        status_code, latency_ms = None, 0.0
+
+    checked_at = datetime.now(tz=timezone.utc)
+    updated = store.update_health(
+        service.id,
+        status_code=status_code,
+        latency_ms=latency_ms,
+        checked_at=checked_at,
+    )
+    if updated:
+        log.info(
+            "Health check result — service:{} url:{} status:{} latency:{:.1f}ms",
+            service.name,
+            service.url,
+            status_code,
+            latency_ms,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Background polling loop
+# ---------------------------------------------------------------------------
+
+
+async def _poll_loop(app: web.Application) -> None:
+    """
+    Background asyncio task that polls all registered services every
+    :data:`POLL_INTERVAL_SECONDS` seconds.
+
+    The loop sleeps in small increments so that it can be cancelled promptly
+    when the application shuts down.
+    """
+    log.info("Monitor poll loop started (interval={}s)", POLL_INTERVAL_SECONDS)
+    try:
+        while True:
+            # Sleep for POLL_INTERVAL_SECONDS in 1-second ticks so cancellation
+            # is responsive.
+            for _ in range(POLL_INTERVAL_SECONDS):
+                await asyncio.sleep(1)
+
+            store: InMemoryServiceStore = app["monitor.store"]
+            services = store.list()
+            if not services:
+                continue
+
+            log.debug("Poll cycle: checking {} service(s)", len(services))
+            # Fan-out: check all services concurrently within this cycle.
+            await asyncio.gather(
+                *[_check_service_async(app, svc) for svc in services],
+                return_exceptions=True,
+            )
+    except asyncio.CancelledError:
+        log.info("Monitor poll loop cancelled — shutting down")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# aiohttp lifecycle hooks
+# ---------------------------------------------------------------------------
+
+
+async def _on_startup(app: web.Application) -> None:
+    """Start the background thread pool and the polling task."""
+    app["monitor.executor"] = ThreadPoolExecutor(
+        max_workers=4,
+        thread_name_prefix="monitor-check",
+    )
+    app["monitor.poll_task"] = asyncio.ensure_future(_poll_loop(app))
+    log.info("Monitor sub-app started")
+
+
+async def _on_cleanup(app: web.Application) -> None:
+    """Cancel the polling task and shut down the thread pool."""
+    poll_task: asyncio.Task = app.get("monitor.poll_task")
+    if poll_task is not None and not poll_task.done():
+        poll_task.cancel()
+        try:
+            await poll_task
+        except asyncio.CancelledError:
+            pass
+
+    executor: Optional[ThreadPoolExecutor] = app.get("monitor.executor")
+    if executor is not None:
+        executor.shutdown(wait=False)
+
+    log.info("Monitor sub-app cleaned up")
+
 
 # ---------------------------------------------------------------------------
 # Request handlers
@@ -73,6 +232,10 @@ async def add_service(request: web.Request) -> web.Response:
     Registers a new URL to monitor.  The body must be JSON with at least a
     ``"url"`` field.  An optional ``"name"`` field may be provided; when
     omitted the URL itself is used as the display name.
+
+    After the service is persisted an immediate health check is triggered in
+    the background so the caller sees a real status on the next GET rather
+    than waiting up to 60 seconds.
 
     Returns 201 with the created service record wrapped in ``{"service": ...}``.
     Returns 400 when the request body is missing or the URL is invalid.
@@ -102,6 +265,9 @@ async def add_service(request: web.Request) -> web.Response:
 
     service = MonitoredService.create(url=url, name=name)
     store.add(service)
+
+    # Trigger an immediate first health check without blocking the response.
+    asyncio.ensure_future(_check_service_async(request.app, service))
 
     return web.json_response({"service": service.to_dict()}, status=HTTPStatus.CREATED)
 
@@ -150,11 +316,18 @@ def create_app(
 
     The in-memory service store is attached to the application under the key
     ``"monitor.store"`` so that it can be injected or replaced in tests.
+
+    A background polling task is registered via ``on_startup`` / ``on_cleanup``
+    lifecycle hooks.
     """
     app = web.Application()
     app["prefix"] = "monitor"
     app["api_versions"] = (4,)
     app["monitor.store"] = InMemoryServiceStore()
+
+    # Register lifecycle hooks for the background poller.
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
 
     cors = aiohttp_cors.setup(app, defaults=default_cors_options)
 
