@@ -8,7 +8,7 @@ Each monitored service stores:
 - last_check_time: timestamp of the most recent health check (None if never checked)
 - last_status_code: HTTP response status code from the last check (None if never checked)
 - last_latency_ms: round-trip latency in milliseconds from the last check (None if never checked)
-- status: "up" | "down" | None (None means never checked)
+- status: "up" | "down" | None (None means never checked yet)
 - created_at: timestamp when the service was registered
 """
 from __future__ import annotations
@@ -113,6 +113,38 @@ class InMemoryServiceStore:
             del self._services[service_id]
             return True
         return False
+
+    def update_health(
+        self,
+        service_id: uuid.UUID,
+        *,
+        status_code: Optional[int],
+        latency_ms: float,
+        checked_at: datetime,
+    ) -> bool:
+        """
+        Update the health-check result fields for the service identified by
+        *service_id*.
+
+        ``status_code`` is ``None`` when the request failed entirely (e.g.
+        connection error or timeout), in which case the service is marked
+        ``"down"``.  Any 2xx status code marks the service ``"up"``; all other
+        codes mark it ``"down"``.
+
+        Returns ``True`` if the service was found and updated, ``False``
+        otherwise.
+        """
+        svc = self._services.get(service_id)
+        if svc is None:
+            return False
+        svc.last_check_time = checked_at
+        svc.last_status_code = status_code
+        svc.last_latency_ms = round(latency_ms, 3)
+        if status_code is not None and 200 <= status_code < 300:
+            svc.status = "up"
+        else:
+            svc.status = "down"
+        return True
 
     def __len__(self) -> int:
         return len(self._services)
