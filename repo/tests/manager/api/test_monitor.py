@@ -55,10 +55,11 @@ async def test_add_service(client: TestClient) -> None:
     assert data["url"] == "https://example.com/health"
     assert data["name"] == "Example Service"
     assert "id" in data
-    assert data["is_up"] is None
-    assert data["last_check_time"] is None
-    assert data["http_status_code"] is None
-    assert data["latency_ms"] is None
+    # After immediate health check, status fields should be populated
+    assert data["status"] in ("up", "down", None)
+    assert "last_check" in data
+    assert "status_code" in data
+    assert "latency_ms" in data
 
 
 @pytest.mark.asyncio
@@ -134,9 +135,9 @@ def test_monitored_service_to_json() -> None:
         id="test-id",
         url="https://example.com",
         name="Test",
-        is_up=True,
-        last_check_time="2024-01-01T00:00:00Z",
-        http_status_code=200,
+        status="up",
+        last_check="2024-01-01T00:00:00Z",
+        status_code=200,
         latency_ms=42.5,
     )
     result = svc.to_json()
@@ -144,9 +145,9 @@ def test_monitored_service_to_json() -> None:
         "id": "test-id",
         "url": "https://example.com",
         "name": "Test",
-        "is_up": True,
-        "last_check_time": "2024-01-01T00:00:00Z",
-        "http_status_code": 200,
+        "status": "up",
+        "last_check": "2024-01-01T00:00:00Z",
+        "status_code": 200,
         "latency_ms": 42.5,
     }
 
@@ -154,7 +155,40 @@ def test_monitored_service_to_json() -> None:
 def test_monitored_service_defaults() -> None:
     svc = MonitoredService(id="id-1", url="https://x.com", name="X")
     result = svc.to_json()
-    assert result["is_up"] is None
-    assert result["last_check_time"] is None
-    assert result["http_status_code"] is None
+    assert result["status"] is None
+    assert result["last_check"] is None
+    assert result["status_code"] is None
     assert result["latency_ms"] is None
+
+
+@pytest.mark.asyncio
+async def test_add_service_down_check(client: TestClient) -> None:
+    """Adding a service with a non-routable URL should result in status='down'."""
+    payload = {"url": "http://192.0.2.1:9999/nope", "name": "Down Service"}
+    resp = await client.post("/monitor/services", json=payload)
+    assert resp.status == HTTPStatus.CREATED
+    data = await resp.json()
+    assert data["status"] == "down"
+    assert data["last_check"] is not None
+    assert data["latency_ms"] is not None
+    assert data["status_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_add_service_up_check(client: TestClient, aiohttp_server: Any) -> None:
+    """Adding a service with a reachable URL should result in status='up'."""
+    # Create a simple test server that returns 200
+    inner_app = web.Application()
+    inner_app.router.add_get("/health", lambda r: web.Response(text="OK"))
+    server = await aiohttp_server(inner_app)
+    url = f"http://localhost:{server.port}/health"
+
+    payload = {"url": url, "name": "Up Service"}
+    resp = await client.post("/monitor/services", json=payload)
+    assert resp.status == HTTPStatus.CREATED
+    data = await resp.json()
+    assert data["status"] == "up"
+    assert data["status_code"] == 200
+    assert data["last_check"] is not None
+    assert data["latency_ms"] is not None
+    assert data["latency_ms"] >= 0
