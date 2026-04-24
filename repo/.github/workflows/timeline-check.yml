@@ -1,0 +1,52 @@
+name: timeline-check
+
+on:
+  pull_request:
+    types: [labeled, unlabeled, opened, synchronize, reopened]
+  merge_group:
+permissions:
+  contents: write
+
+jobs:
+  assign-pr-number:
+    if: |
+      !contains(github.event.pull_request.labels.*.name, 'skip:changelog')
+      && !contains(fromJSON('["flow:merge-queue", "flow:hotfix"]'), github.event.label.name)
+      && github.event.pull_request.number != null
+      && github.event.pull_request.merged == false
+      && github.event.pull_request.draft == false
+    uses: ./.github/workflows/assign-pr-number.yml
+    secrets:
+      WORKFLOW_PAT: ${{ secrets.OCTODOG }}
+
+  towncrier:
+    needs: [assign-pr-number]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Get PR's fetch depth
+      run: echo "PR_FETCH_DEPTH=$(( ${{ github.event.pull_request.commits }} + 1 ))" >> "${GITHUB_ENV}"
+    - name: Checkout the revision
+      uses: actions/checkout@v4
+      with:
+        lfs: false
+        fetch-depth: ${{ env.PR_FETCH_DEPTH }}
+        sparse-checkout: |
+          changes
+          tools
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+        check-latest: true
+    - name: Install dependencies
+      run: |
+        python -m pip install -U -r tools/towncrier-requirements.txt
+    - name: Check existence of news fragment
+      run: |
+        BASE_COMMIT=$(git rev-list --first-parent --max-parents=0 --max-count=1 HEAD)
+        BASE_TIMESTAMP=$(git log --format=%ct "${BASE_COMMIT}")
+        git fetch --no-tags --shallow-since "${BASE_TIMESTAMP}" origin "${BASE_REF}"
+        python -m towncrier.check --compare-with=origin/${BASE_REF}
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
