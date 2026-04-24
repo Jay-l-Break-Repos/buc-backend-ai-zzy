@@ -1,0 +1,146 @@
+[project]
+requires-python = "~=3.13.7"
+name = "backend.ai"
+dynamic = ["version"]
+
+[tool.towncrier]
+package = "ai.backend.manager"  # reference point for getting __version__
+filename = "CHANGELOG.md"
+directory = "changes/"
+title_format = ""  # embedded inside the template
+template = "changes/template.md"
+start_string = "<!-- towncrier release notes start -->\n"
+issue_format = "([#{issue}](https://github.com/lablup/backend.ai/issues/{issue}))"
+underlines = ["", "", ""]
+
+# NOTE: A single PR may have multiple news fragments with different types.
+
+[[tool.towncrier.type]]
+    # Put breaking changes that should be announced loudly.
+    directory = "breaking"
+    name = "Breaking Changes"
+    showcontent = true
+
+[[tool.towncrier.type]]
+    directory = "feature"
+    name = "Features"
+    showcontent = true
+
+[[tool.towncrier.type]]
+    # Describe general improvements, such as internal refactoring, optimization,
+    # performance improvements, and etc. that do not introduce new features.
+    directory = "enhance"
+    name = "Improvements"
+    showcontent = true
+
+[[tool.towncrier.type]]
+    directory = "deprecation"
+    name = "Deprecations"
+    showcontent = true
+
+[[tool.towncrier.type]]
+    directory = "fix"
+    name = "Fixes"
+    showcontent = true
+
+[[tool.towncrier.type]]
+    directory = "doc"
+    name = "Documentation Updates"
+    showcontent = true
+
+[[tool.towncrier.type]]
+    # Describe notable changes of external/upstream dependencies
+    # that may require installers updates and extra concerns
+    # to upgrade existing setups.
+    directory = "deps"
+    name = "External Dependency Updates"
+    showcontent = true
+
+[[tool.towncrier.type]]
+    directory = "misc"
+    name = "Miscellaneous"
+    showcontent = true
+
+[[tool.towncrier.type]]
+    directory = "test"
+    name = "Test Updates"
+    showcontent = true
+
+[tool.pytest.ini_options]
+testpaths = "tests"
+markers = [
+    "integration: Test cases that spawn Dockerized kernel sessions",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:etcd3.*:",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    # "C",  # flake8-comprehensions
+    # "B",  # flake8-bugbear
+]
+ignore = ["E203","E731","E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ai.backend"]
+known-local-folder = ["src"]
+known-third-party = ["alembic", "redis", "kubernetes"]
+split-on-trailing-comma = true
+
+[tool.ruff.lint.per-file-ignores]
+"src/ai/backend/manager/config.py" = ["E402"]
+"src/ai/backend/manager/models/alembic/env.py" = ["E402"]
+
+[tool.ruff.format]
+preview = true  # enable the black's preview style
+
+[tool.black]
+# unused for our codebase but preserved for `pants tailor`
+line-length = 100
+preview = true
+
+[tool.mypy]
+plugins = ["pydantic.mypy", "strawberry.ext.mypy_plugin"]
+ignore_missing_imports = true
+follow_untyped_imports = false
+mypy_path = "stubs:src:tools/pants-plugins"
+namespace_packages = true
+explicit_package_bases = true
+python_executable = "dist/export/python/virtualenvs/python-default/3.13.7/bin/python"
+disable_error_code = ["typeddict-unknown-key"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+include = [
+    "src",
+    "tools/pants-plugins",
+]
+stubPath = "stubs"
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "src/ai/backend/webui",
+    "src/ai/backend/web/static",
+]
+venvPath = "dist/export/python/virtualenvs/python-default"
+venv = "3.13.7"
+typeCheckingMode = "standard"
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = false
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }

@@ -1,0 +1,49 @@
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+
+[*.sh]
+indent_style = space
+indent_size = 2
+
+[*.{py,md}]
+max_line_length = 100
+indent_style = space
+indent_size = 4
+
+[*.md]
+max_line_length = 0
+trim_trailing_whitespace = false
+
+[*.diff]
+max_line_length = 0
+trim_trailing_whitespace = false
+
+[*.rst]
+max_line_length = 0
+indent_style = space
+indent_size = 3
+
+[*.json]
+indent_style = space
+indent_size = 2
+
+[.travis.yml]
+indent_style = space
+indent_size = 2
+
+[changes/*.md]
+max_line_length = 0
+indent_style = space
+indent_size = 2
+
+[BUILD]
+indent_style = space
+indent_size = 4
+
+[VERSION]
+insert_final_newline = false
