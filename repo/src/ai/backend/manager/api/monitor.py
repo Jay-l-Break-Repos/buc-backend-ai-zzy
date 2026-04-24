@@ -101,8 +101,13 @@ async def _poll_services(app: web.Application) -> None:
 
 async def _on_startup(app: web.Application) -> None:
     """Create the shared HTTP session and start the background poller."""
-    app["monitor.http_session"] = aiohttp.ClientSession()
-    app["monitor.poll_task"] = asyncio.create_task(_poll_services(app))
+    try:
+        app["monitor.http_session"] = aiohttp.ClientSession()
+        app["monitor.poll_task"] = asyncio.create_task(_poll_services(app))
+    except Exception:
+        log.exception("Failed to initialize monitor background poller")
+        app["monitor.http_session"] = None
+        app["monitor.poll_task"] = None
 
 
 async def _on_cleanup(app: web.Application) -> None:
